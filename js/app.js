@@ -14,8 +14,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const statusText = document.getElementById('statusText');
   const statusDot = document.getElementById('statusDot');
 
-  // Init Three.js scene and WebXR
-  initVRScene();
+  // Check WebXR support only (scene init is deferred until gallery build)
   checkWebXRSupport();
 
   // Open IndexedDB and load saved quilts
@@ -40,6 +39,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     updateUI();
     if (loadedCount > 0) {
+      // Init scene after quilts are restored — canvas has layout now
+      if (!vrRenderer) initVRScene();
       setStatus(loadedCount + ' quilt(s) restored from storage');
     } else {
       setStatus('Ready');
@@ -105,6 +106,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     const screenSize = parseFloat(document.getElementById('displaySize').value) || 2.5;
     const spacing = parseFloat(document.getElementById('displaySpacing').value) || 4;
     const layout = document.getElementById('layoutSelect').value;
+
+    // Init scene now — canvas has layout dimensions after user interaction
+    if (!vrRenderer) {
+      initVRScene();
+    }
+
     buildGallery(quiltStore.quilts, layout, screenSize, spacing);
     canvasOverlay.classList.add('hidden');
     setStatus('Gallery built with ' + quiltStore.quilts.length + ' displays');
