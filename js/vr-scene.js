@@ -14,13 +14,13 @@ function initVRScene() {
   }
 
   const canvas = document.getElementById('preview-canvas');
-  const container = canvas.parentElement;
+  const container = document.getElementById('viewerContainer');
 
-  // Use canvas offset dimensions as fallback — container may be 0 before layout on Quest
-  let w = container.clientWidth || canvas.offsetWidth || 800;
-  let h = container.clientHeight || canvas.offsetHeight || 600;
+  // Use container dimensions — has min-width/min-height CSS guards
+  let w = container.clientWidth || 800;
+  let h = container.clientHeight || 600;
 
-  // Ensure minimum dimensions for Quest browser WebGL context
+  // Force minimum dimensions for Quest browser WebGL context
   if (w < 100) w = 800;
   if (h < 100) h = 600;
 
