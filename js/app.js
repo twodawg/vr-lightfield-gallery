@@ -14,8 +14,28 @@ document.addEventListener('DOMContentLoaded', async () => {
   const statusText = document.getElementById('statusText');
   const statusDot = document.getElementById('statusDot');
 
-  // Check WebXR support only (scene init is deferred until gallery build)
+  // Check WebXR support
   checkWebXRSupport();
+
+  // Defer scene init until container has actual dimensions
+  // Quest browser may delay layout — use ResizeObserver + timeout fallback
+  const container = document.getElementById('viewerContainer');
+  const observer = new ResizeObserver((entries) => {
+    for (const entry of entries) {
+      if (entry.contentRect.width > 0 && entry.contentRect.height > 0) {
+        observer.disconnect();
+        initVRScene();
+        break;
+      }
+    }
+  });
+  observer.observe(container);
+
+  // Fallback: init after 1 second regardless
+  setTimeout(() => {
+    observer.disconnect();
+    initVRScene();
+  }, 1000);
 
   // Open IndexedDB and load saved quilts
   setStatus('Loading stored quilts...');
@@ -39,8 +59,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     updateUI();
     if (loadedCount > 0) {
-      // Init scene after quilts are restored — canvas has layout now
-      if (!vrRenderer) initVRScene();
       setStatus(loadedCount + ' quilt(s) restored from storage');
     } else {
       setStatus('Ready');
@@ -107,10 +125,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     const spacing = parseFloat(document.getElementById('displaySpacing').value) || 4;
     const layout = document.getElementById('layoutSelect').value;
 
-    // Init scene now — canvas has layout dimensions after user interaction
-    if (!vrRenderer) {
-      initVRScene();
-    }
+    // Ensure scene is initialized
+    if (!vrRenderer) initVRScene();
 
     buildGallery(quiltStore.quilts, layout, screenSize, spacing);
     canvasOverlay.classList.add('hidden');
