@@ -15,16 +15,14 @@ function initVRScene() {
 
   const canvas = document.getElementById('preview-canvas');
   const container = canvas.parentElement;
-  const w = container.clientWidth || 800;
-  const h = container.clientHeight || 600;
 
-  // Force minimum dimensions for Quest browser
-  if (w === 0 || h === 0) {
-    canvas.width = 800;
-    canvas.height = 600;
-    setTimeout(initVRScene, 200);
-    return;
-  }
+  // Use canvas offset dimensions as fallback — container may be 0 before layout on Quest
+  let w = container.clientWidth || canvas.offsetWidth || 800;
+  let h = container.clientHeight || canvas.offsetHeight || 600;
+
+  // Ensure minimum dimensions for Quest browser WebGL context
+  if (w < 100) w = 800;
+  if (h < 100) h = 600;
 
   canvas.width = w;
   canvas.height = h;
@@ -70,34 +68,13 @@ function initVRScene() {
   grid.position.y = 0.01;
   vrScene.add(grid);
 
-  // Ambient light
+  // Lights
   const ambient = new THREE.AmbientLight(0x404060, 0.5);
   vrScene.add(ambient);
 
-  // Point light
   const point = new THREE.PointLight(0x6c63ff, 1, 20);
   point.position.set(0, 5, 0);
   vrScene.add(point);
-
-  // Debug cube — visible to confirm scene renders
-  const debugGeo = new THREE.BoxGeometry(0.2, 0.2, 0.2);
-  const debugMat = new THREE.MeshBasicMaterial({ color: 0xff0000 });
-  const debugCube = new THREE.Mesh(debugGeo, debugMat);
-  debugCube.position.set(0, 1.6, -3);
-  vrScene.add(debugCube);
-
-  // Debug panel — shows status in VR
-  vrDebugCanvas = document.createElement('canvas');
-  vrDebugCanvas.width = 512;
-  vrDebugCanvas.height = 256;
-  vrDebugTexture = new THREE.CanvasTexture(vrDebugCanvas);
-  vrDebugTexture.minFilter = THREE.LinearFilter;
-  vrDebugMesh = new THREE.Mesh(
-    new THREE.PlaneGeometry(1.5, 0.75),
-    new THREE.MeshBasicMaterial({ map: vrDebugTexture, transparent: true })
-  );
-  vrDebugMesh.position.set(0, 3, -3);
-  vrScene.add(vrDebugMesh);
 
   // Desktop orbit controls
   canvas.addEventListener('mousedown', e => { isDragging = true; lastMouse = { x: e.clientX, y: e.clientY }; });
@@ -126,24 +103,15 @@ function initVRScene() {
   // Render loop
   vrRenderer.setAnimationLoop(renderFrame);
   vrRenderer.render(vrScene, vrCamera);
-
-  console.log('[Gallery] Scene initialized');
 }
-
-let vrFrameCount = 0;
-let vrDebugCanvas, vrDebugTexture, vrDebugMesh;
 
 function renderFrame(timestamp, frame) {
   if (!vrRenderer || !vrScene || !vrCamera) return;
 
   let viewerPosition = null;
-  let debugLines = [];
 
   if (frame) {
-    vrFrameCount++;
-    debugLines.push('XR: active');
-    debugLines.push('Frames: ' + vrFrameCount);
-
+    // XR mode: get head position from pose
     const refSpace = vrRenderer.xr.getReferenceSpace();
     if (refSpace) {
       const pose = frame.getViewerPose(refSpace);
@@ -151,15 +119,8 @@ function renderFrame(timestamp, frame) {
         const view = pose.views[0];
         if (view && view.transform) {
           viewerPosition = view.transform.position;
-          debugLines.push('Head: ' + viewerPosition.x.toFixed(2) + ',' + viewerPosition.y.toFixed(2) + ',' + viewerPosition.z.toFixed(2));
-        } else {
-          debugLines.push('ERROR: no transform');
         }
-      } else {
-        debugLines.push('ERROR: no pose');
       }
-    } else {
-      debugLines.push('ERROR: no refSpace');
     }
   } else {
     // Desktop mode: orbit camera
@@ -176,21 +137,6 @@ function renderFrame(timestamp, frame) {
     if (display.active) {
       display.updateTile(viewerPosition);
     }
-  }
-
-  // Draw debug panel
-  if (vrDebugCanvas) {
-    const ctx = vrDebugCanvas.getContext('2d');
-    ctx.fillStyle = 'rgba(0,0,0,0.8)';
-    ctx.fillRect(0, 0, 512, 256);
-    ctx.fillStyle = '#0f0';
-    ctx.font = '16px monospace';
-    debugLines.forEach((line, i) => {
-      ctx.fillText(line, 10, 25 + i * 20);
-    });
-    ctx.fillStyle = '#f00';
-    ctx.fillText('Displays: ' + galleryDisplays.length, 10, 240);
-    if (vrDebugTexture) vrDebugTexture.needsUpdate = true;
   }
 
   vrRenderer.render(vrScene, vrCamera);
@@ -245,8 +191,6 @@ function buildGallery(quilts, layout, screenSize, spacing) {
     vrScene.add(display.frameMesh);
     galleryDisplays.push(display);
   }
-
-  console.log('[Gallery] Built', galleryDisplays.length, 'displays');
 }
 
 function clearGallery() {
@@ -278,8 +222,6 @@ async function enterVR() {
     canvas.width = container.clientWidth || 800;
     canvas.height = container.clientHeight || 600;
     vrRenderer.setSize(canvas.width, canvas.height);
-
-    console.log('[Gallery] VR session started');
   } catch (err) {
     console.error('[Gallery] VR failed:', err);
     document.getElementById('vrStatus').textContent = 'VR Error: ' + err.message;
