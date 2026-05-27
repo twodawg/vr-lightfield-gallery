@@ -1,0 +1,16 @@
+# Large test images
+*.png
+*.jpg
+*.jpeg
+*.webp
+
+# Node modules (if added later)
+node_modules/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
