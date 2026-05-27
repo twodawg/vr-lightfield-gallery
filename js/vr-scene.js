@@ -18,10 +18,16 @@ function initVRScene() {
   const w = container.clientWidth || 800;
   const h = container.clientHeight || 600;
 
+  // Force minimum dimensions for Quest browser
+  if (w === 0 || h === 0) {
+    canvas.width = 800;
+    canvas.height = 600;
+    setTimeout(initVRScene, 200);
+    return;
+  }
+
   canvas.width = w;
   canvas.height = h;
-
-  if (w === 0 || h === 0) { setTimeout(initVRScene, 200); return; }
 
   // Dispose old renderer
   if (vrRenderer) {
@@ -73,6 +79,26 @@ function initVRScene() {
   point.position.set(0, 5, 0);
   vrScene.add(point);
 
+  // Debug cube — visible to confirm scene renders
+  const debugGeo = new THREE.BoxGeometry(0.2, 0.2, 0.2);
+  const debugMat = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+  const debugCube = new THREE.Mesh(debugGeo, debugMat);
+  debugCube.position.set(0, 1.6, -3);
+  vrScene.add(debugCube);
+
+  // Debug panel — shows status in VR
+  vrDebugCanvas = document.createElement('canvas');
+  vrDebugCanvas.width = 512;
+  vrDebugCanvas.height = 256;
+  vrDebugTexture = new THREE.CanvasTexture(vrDebugCanvas);
+  vrDebugTexture.minFilter = THREE.LinearFilter;
+  vrDebugMesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.5, 0.75),
+    new THREE.MeshBasicMaterial({ map: vrDebugTexture, transparent: true })
+  );
+  vrDebugMesh.position.set(0, 3, -3);
+  vrScene.add(vrDebugMesh);
+
   // Desktop orbit controls
   canvas.addEventListener('mousedown', e => { isDragging = true; lastMouse = { x: e.clientX, y: e.clientY }; });
   canvas.addEventListener('mousemove', e => {
@@ -104,13 +130,20 @@ function initVRScene() {
   console.log('[Gallery] Scene initialized');
 }
 
+let vrFrameCount = 0;
+let vrDebugCanvas, vrDebugTexture, vrDebugMesh;
+
 function renderFrame(timestamp, frame) {
   if (!vrRenderer || !vrScene || !vrCamera) return;
 
   let viewerPosition = null;
+  let debugLines = [];
 
   if (frame) {
-    // XR mode: get head position from pose
+    vrFrameCount++;
+    debugLines.push('XR: active');
+    debugLines.push('Frames: ' + vrFrameCount);
+
     const refSpace = vrRenderer.xr.getReferenceSpace();
     if (refSpace) {
       const pose = frame.getViewerPose(refSpace);
@@ -118,8 +151,15 @@ function renderFrame(timestamp, frame) {
         const view = pose.views[0];
         if (view && view.transform) {
           viewerPosition = view.transform.position;
+          debugLines.push('Head: ' + viewerPosition.x.toFixed(2) + ',' + viewerPosition.y.toFixed(2) + ',' + viewerPosition.z.toFixed(2));
+        } else {
+          debugLines.push('ERROR: no transform');
         }
+      } else {
+        debugLines.push('ERROR: no pose');
       }
+    } else {
+      debugLines.push('ERROR: no refSpace');
     }
   } else {
     // Desktop mode: orbit camera
@@ -136,6 +176,21 @@ function renderFrame(timestamp, frame) {
     if (display.active) {
       display.updateTile(viewerPosition);
     }
+  }
+
+  // Draw debug panel
+  if (vrDebugCanvas) {
+    const ctx = vrDebugCanvas.getContext('2d');
+    ctx.fillStyle = 'rgba(0,0,0,0.8)';
+    ctx.fillRect(0, 0, 512, 256);
+    ctx.fillStyle = '#0f0';
+    ctx.font = '16px monospace';
+    debugLines.forEach((line, i) => {
+      ctx.fillText(line, 10, 25 + i * 20);
+    });
+    ctx.fillStyle = '#f00';
+    ctx.fillText('Displays: ' + galleryDisplays.length, 10, 240);
+    if (vrDebugTexture) vrDebugTexture.needsUpdate = true;
   }
 
   vrRenderer.render(vrScene, vrCamera);
