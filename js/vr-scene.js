@@ -111,14 +111,15 @@ function renderFrame(timestamp, frame) {
   let viewerPosition = null;
 
   if (frame) {
-    // XR mode: get head position from pose
+    // XR mode: get head position from pose and convert to THREE.Vector3
     const refSpace = vrRenderer.xr.getReferenceSpace();
     if (refSpace) {
       const pose = frame.getViewerPose(refSpace);
       if (pose && pose.views && pose.views.length > 0) {
         const view = pose.views[0];
         if (view && view.transform) {
-          viewerPosition = view.transform.position;
+          const p = view.transform.position;
+          viewerPosition = new THREE.Vector3(p.x, p.y, p.z);
         }
       }
     }
@@ -209,9 +210,14 @@ async function enterVR() {
     });
     currentXrSession = session;
 
-    const refSpace = await session.requestReferenceSpace('local');
+    let refSpace;
+    try {
+      refSpace = await session.requestReferenceSpace('local-floor');
+    } catch {
+      refSpace = await session.requestReferenceSpace('local');
+    }
     vrRenderer.xr.setReferenceSpace(refSpace);
-    vrRenderer.xr.setSession(session);
+    await vrRenderer.xr.setSession(session);
 
     session.addEventListener('end', () => {
       currentXrSession = null;

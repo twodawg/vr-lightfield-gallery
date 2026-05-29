@@ -12,6 +12,7 @@ class GalleryDisplay {
     this.canvas = null;
     this.frameMesh = null;
     this.active = true;
+    this.currentTileIndex = -1;
 
     const { cols, rows, tileW, tileH } = quilt;
     const aspect = tileW / tileH;
@@ -63,7 +64,11 @@ class GalleryDisplay {
     let tileCol, tileRow;
 
     if (viewerPosition) {
-      const localPos = viewerPosition.clone().sub(this.position);
+      // Normalize to THREE.Vector3 in case a non-Vector3 position object is passed
+      const vp = (viewerPosition instanceof THREE.Vector3)
+        ? viewerPosition
+        : new THREE.Vector3(viewerPosition.x, viewerPosition.y, viewerPosition.z);
+      const localPos = vp.clone().sub(this.position);
       const invRotation = -this.rotationY;
       const cos = Math.cos(invRotation);
       const sin = Math.sin(invRotation);
@@ -81,6 +86,10 @@ class GalleryDisplay {
     tileRow = Math.max(0, Math.min(rows - 1, tileRow));
 
     const tileIndex = tileRow * cols + tileCol;
+    // Skip redraw when the tile hasn't changed (texture remains valid between frames)
+    if (tileIndex === this.currentTileIndex) return;
+    this.currentTileIndex = tileIndex;
+
     if (tileIndex >= 0 && tileIndex < tiles.length) {
       const ctx = this.canvas.getContext('2d');
       ctx.clearRect(0, 0, tileW, tileH);
