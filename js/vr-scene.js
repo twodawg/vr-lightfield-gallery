@@ -11,6 +11,7 @@ let xrDolly = null;
 let xrYaw = 0;
 let lastXrTimestamp = null;
 let snapTurnState = { left: false, right: false };
+let xrExitButtonWasPressed = false;
 
 const XR_MOVE_SPEED = 2.0; // meters per second
 const XR_STICK_DEADZONE = 0.18;
@@ -131,6 +132,7 @@ function renderFrame(timestamp, frame) {
 
   if (frame) {
     updateXRControllerNavigation(timestamp);
+    updateXRSessionButtons();
     viewerPosition = getXRWorldPosition();
   } else {
     // Desktop mode: orbit camera
@@ -217,6 +219,42 @@ function updateXRControllerNavigation(timestamp) {
   }
 }
 
+function updateXRSessionButtons() {
+  if (!currentXrSession) return;
+
+  let exitPressed = false;
+  for (const inputSource of currentXrSession.inputSources) {
+    const gamepad = inputSource.gamepad;
+    if (!gamepad || !gamepad.buttons) continue;
+
+    // xr-standard buttons: 0 trigger, 1 grip, 2 touchpad, 3 thumbstick,
+    // 4 primary face button (A/X), 5 secondary face button (B/Y).
+    // Prefer B/Y for exit, with thumbstick click as a fallback on controllers
+    // that do not expose face buttons.
+    const buttons = gamepad.buttons;
+    const secondaryFace = buttons[5] && buttons[5].pressed;
+    const primaryFace = buttons[4] && buttons[4].pressed;
+    const thumbstickClick = buttons.length < 5 && buttons[3] && buttons[3].pressed;
+
+    if (secondaryFace || primaryFace || thumbstickClick) {
+      exitPressed = true;
+      break;
+    }
+  }
+
+  if (exitPressed && !xrExitButtonWasPressed) {
+    exitVR();
+  }
+  xrExitButtonWasPressed = exitPressed;
+}
+
+function exitVR() {
+  if (!currentXrSession) return;
+  currentXrSession.end().catch(err => {
+    console.error('[Gallery] Failed to exit VR:', err);
+  });
+}
+
 function getThumbstickAxes(gamepad) {
   if (!gamepad || !gamepad.axes || gamepad.axes.length < 2) return null;
 
@@ -256,9 +294,23 @@ function getHeadsetYaw() {
 }
 
 function getXRWorldPosition() {
-  const camera = vrRenderer.xr.getCamera(vrCamera);
   const position = new THREE.Vector3();
-  camera.getWorldPosition(position);
+  const xrCamera = vrRenderer.xr.getCamera(vrCamera);
+
+  if (xrCamera) {
+    // WebXRManager's XR camera position tracks physical headset motion in the
+    // reference space. Add the dolly transform so controller locomotion also
+    // affects quilt tile/parallax selection.
+    position.copy(xrCamera.position);
+  } else {
+    vrCamera.getWorldPosition(position);
+  }
+
+  if (xrDolly) {
+    position.applyQuaternion(xrDolly.quaternion);
+    position.add(xrDolly.position);
+  }
+
   return position;
 }
 
@@ -330,6 +382,7 @@ async function enterVR() {
     currentXrSession = session;
     xrYaw = 0;
     lastXrTimestamp = null;
+    xrExitButtonWasPressed = false;
     snapTurnState = { left: false, right: false };
     if (xrDolly) {
       xrDolly.position.set(0, 0, 0);
@@ -348,6 +401,7 @@ async function enterVR() {
     session.addEventListener('end', () => {
       currentXrSession = null;
       lastXrTimestamp = null;
+      xrExitButtonWasPressed = false;
     });
 
     const canvas = document.getElementById('preview-canvas');
