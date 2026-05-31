@@ -6,6 +6,17 @@ let orbitAngle = { x: 0, y: 0 };
 let isDragging = false;
 let lastMouse = { x: 0, y: 0 };
 let currentXrSession = null;
+let baseXrReferenceSpace = null;
+let xrMoveOffset = new THREE.Vector3(0, 0, 0);
+let xrYawOffset = 0;
+let lastXrTimestamp = null;
+let snapTurnState = { left: false, right: false };
+
+const XR_MOVE_SPEED = 2.0; // meters per second
+const XR_STICK_DEADZONE = 0.2;
+const XR_SNAP_TURN_ANGLE = Math.PI / 8; // 22.5 degrees
+const XR_SNAP_TURN_THRESHOLD = 0.75;
+const XR_SNAP_TURN_RESET = 0.35;
 
 function initVRScene() {
   if (typeof THREE === 'undefined') {
@@ -111,7 +122,10 @@ function renderFrame(timestamp, frame) {
   let viewerPosition = null;
 
   if (frame) {
-    // XR mode: get head position from pose and convert to THREE.Vector3
+    // XR mode: controller navigation updates the active reference space, then
+    // the viewer pose is read from that space for rendering/parallax.
+    updateXRControllerNavigation(timestamp, frame);
+
     const refSpace = vrRenderer.xr.getReferenceSpace();
     if (refSpace) {
       const pose = frame.getViewerPose(refSpace);
@@ -141,6 +155,124 @@ function renderFrame(timestamp, frame) {
   }
 
   vrRenderer.render(vrScene, vrCamera);
+}
+
+function updateXRControllerNavigation(timestamp, frame) {
+  if (!currentXrSession || !baseXrReferenceSpace || typeof XRRigidTransform === 'undefined') return;
+
+  if (lastXrTimestamp === null) {
+    lastXrTimestamp = timestamp;
+    return;
+  }
+
+  const dt = Math.min(Math.max((timestamp - lastXrTimestamp) / 1000, 0), 0.1);
+  lastXrTimestamp = timestamp;
+
+  let moveX = 0;
+  let moveY = 0;
+  let turnX = 0;
+
+  for (const inputSource of currentXrSession.inputSources) {
+    const stick = getThumbstickAxes(inputSource.gamepad);
+    if (!stick) continue;
+
+    if (inputSource.handedness === 'right') {
+      turnX = Math.abs(stick.x) > Math.abs(turnX) ? stick.x : turnX;
+    } else {
+      moveX = Math.abs(stick.x) > Math.abs(moveX) ? stick.x : moveX;
+      moveY = Math.abs(stick.y) > Math.abs(moveY) ? stick.y : moveY;
+    }
+  }
+
+  moveX = applyDeadzone(moveX, XR_STICK_DEADZONE);
+  moveY = applyDeadzone(moveY, XR_STICK_DEADZONE);
+  turnX = applyDeadzone(turnX, XR_STICK_DEADZONE);
+
+  let changed = false;
+
+  if (Math.abs(moveX) > 0 || Math.abs(moveY) > 0) {
+    const currentRefSpace = vrRenderer.xr.getReferenceSpace() || baseXrReferenceSpace;
+    const pose = frame.getViewerPose(currentRefSpace);
+    const headYaw = pose ? getViewerYaw(pose) : xrYawOffset;
+
+    // Gamepad Y is usually negative when pushed forward.
+    const forwardAmount = -moveY;
+    const strafeAmount = moveX;
+    const forward = new THREE.Vector3(Math.sin(headYaw), 0, -Math.cos(headYaw));
+    const strafe = new THREE.Vector3(Math.cos(headYaw), 0, Math.sin(headYaw));
+
+    xrMoveOffset.addScaledVector(forward, forwardAmount * XR_MOVE_SPEED * dt);
+    xrMoveOffset.addScaledVector(strafe, strafeAmount * XR_MOVE_SPEED * dt);
+    changed = true;
+  }
+
+  if (turnX > XR_SNAP_TURN_THRESHOLD && !snapTurnState.right) {
+    xrYawOffset -= XR_SNAP_TURN_ANGLE;
+    snapTurnState.right = true;
+    changed = true;
+  } else if (turnX < -XR_SNAP_TURN_THRESHOLD && !snapTurnState.left) {
+    xrYawOffset += XR_SNAP_TURN_ANGLE;
+    snapTurnState.left = true;
+    changed = true;
+  }
+
+  if (Math.abs(turnX) < XR_SNAP_TURN_RESET) {
+    snapTurnState.left = false;
+    snapTurnState.right = false;
+  }
+
+  if (changed) {
+    applyXRReferenceSpaceOffset();
+  }
+}
+
+function getThumbstickAxes(gamepad) {
+  if (!gamepad || !gamepad.axes || gamepad.axes.length < 2) return null;
+
+  // WebXR controller mappings vary. Prefer the last axis pair because that is
+  // where Oculus/Quest reports thumbstick X/Y, but fall back to the strongest
+  // pair so other controllers still work.
+  const axes = gamepad.axes;
+  const candidates = [];
+  for (let i = 0; i < axes.length - 1; i += 2) {
+    candidates.push({ x: axes[i] || 0, y: axes[i + 1] || 0, index: i });
+  }
+
+  let best = candidates[candidates.length - 1];
+  let bestMagnitude = Math.abs(best.x) + Math.abs(best.y);
+  for (const candidate of candidates) {
+    const magnitude = Math.abs(candidate.x) + Math.abs(candidate.y);
+    if (magnitude > bestMagnitude) {
+      best = candidate;
+      bestMagnitude = magnitude;
+    }
+  }
+
+  return bestMagnitude > XR_STICK_DEADZONE ? best : null;
+}
+
+function applyDeadzone(value, deadzone) {
+  if (Math.abs(value) < deadzone) return 0;
+  return value;
+}
+
+function getViewerYaw(pose) {
+  const view = pose.views && pose.views[0];
+  if (!view || !view.transform || !view.transform.orientation) return xrYawOffset;
+
+  const q = view.transform.orientation;
+  const quaternion = new THREE.Quaternion(q.x, q.y, q.z, q.w);
+  const euler = new THREE.Euler().setFromQuaternion(quaternion, 'YXZ');
+  return euler.y;
+}
+
+function applyXRReferenceSpaceOffset() {
+  const halfYaw = -xrYawOffset / 2;
+  const transform = new XRRigidTransform(
+    { x: -xrMoveOffset.x, y: 0, z: -xrMoveOffset.z },
+    { x: 0, y: Math.sin(halfYaw), z: 0, w: Math.cos(halfYaw) }
+  );
+  vrRenderer.xr.setReferenceSpace(baseXrReferenceSpace.getOffsetReferenceSpace(transform));
 }
 
 function buildGallery(quilts, layout, screenSize, spacing) {
@@ -209,6 +341,10 @@ async function enterVR() {
       optionalFeatures: ['local-floor', 'bounded-floor']
     });
     currentXrSession = session;
+    xrMoveOffset.set(0, 0, 0);
+    xrYawOffset = 0;
+    lastXrTimestamp = null;
+    snapTurnState = { left: false, right: false };
 
     let refSpace;
     try {
@@ -216,11 +352,14 @@ async function enterVR() {
     } catch {
       refSpace = await session.requestReferenceSpace('local');
     }
-    vrRenderer.xr.setReferenceSpace(refSpace);
+    baseXrReferenceSpace = refSpace;
+    vrRenderer.xr.setReferenceSpace(baseXrReferenceSpace);
     await vrRenderer.xr.setSession(session);
 
     session.addEventListener('end', () => {
       currentXrSession = null;
+      baseXrReferenceSpace = null;
+      lastXrTimestamp = null;
     });
 
     const canvas = document.getElementById('preview-canvas');
