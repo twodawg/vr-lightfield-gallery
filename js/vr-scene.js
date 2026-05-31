@@ -6,16 +6,16 @@ let orbitAngle = { x: 0, y: 0 };
 let isDragging = false;
 let lastMouse = { x: 0, y: 0 };
 let currentXrSession = null;
-let baseXrReferenceSpace = null;
-let xrMoveOffset = new THREE.Vector3(0, 0, 0);
-let xrYawOffset = 0;
+let xrPlayer = null;
+let xrDolly = null;
+let xrYaw = 0;
 let lastXrTimestamp = null;
 let snapTurnState = { left: false, right: false };
 
 const XR_MOVE_SPEED = 2.0; // meters per second
-const XR_STICK_DEADZONE = 0.2;
+const XR_STICK_DEADZONE = 0.18;
 const XR_SNAP_TURN_ANGLE = Math.PI / 8; // 22.5 degrees
-const XR_SNAP_TURN_THRESHOLD = 0.75;
+const XR_SNAP_TURN_THRESHOLD = 0.65;
 const XR_SNAP_TURN_RESET = 0.35;
 
 function initVRScene() {
@@ -53,6 +53,14 @@ function initVRScene() {
   // Camera
   vrCamera = new THREE.PerspectiveCamera(70, w / h, 0.01, 100);
   vrCamera.position.set(0, 1.6, 0);
+
+  // XR movement rig. WebXR owns the camera transform while immersive, so move
+  // this parent object instead of trying to move the XR camera directly.
+  xrDolly = new THREE.Group();
+  xrPlayer = new THREE.Group();
+  xrPlayer.add(vrCamera);
+  xrDolly.add(xrPlayer);
+  vrScene.add(xrDolly);
 
   // Renderer
   vrRenderer = new THREE.WebGLRenderer({
@@ -122,21 +130,8 @@ function renderFrame(timestamp, frame) {
   let viewerPosition = null;
 
   if (frame) {
-    // XR mode: controller navigation updates the active reference space, then
-    // the viewer pose is read from that space for rendering/parallax.
-    updateXRControllerNavigation(timestamp, frame);
-
-    const refSpace = vrRenderer.xr.getReferenceSpace();
-    if (refSpace) {
-      const pose = frame.getViewerPose(refSpace);
-      if (pose && pose.views && pose.views.length > 0) {
-        const view = pose.views[0];
-        if (view && view.transform) {
-          const p = view.transform.position;
-          viewerPosition = new THREE.Vector3(p.x, p.y, p.z);
-        }
-      }
-    }
+    updateXRControllerNavigation(timestamp);
+    viewerPosition = getXRWorldPosition();
   } else {
     // Desktop mode: orbit camera
     const radius = 8;
@@ -157,8 +152,8 @@ function renderFrame(timestamp, frame) {
   vrRenderer.render(vrScene, vrCamera);
 }
 
-function updateXRControllerNavigation(timestamp, frame) {
-  if (!currentXrSession || !baseXrReferenceSpace || typeof XRRigidTransform === 'undefined') return;
+function updateXRControllerNavigation(timestamp) {
+  if (!currentXrSession || !xrDolly) return;
 
   if (lastXrTimestamp === null) {
     lastXrTimestamp = timestamp;
@@ -176,11 +171,16 @@ function updateXRControllerNavigation(timestamp, frame) {
     const stick = getThumbstickAxes(inputSource.gamepad);
     if (!stick) continue;
 
+    // Quest and most WebXR controllers report handedness, but also allow a
+    // one-controller fallback: vertical stick moves, horizontal stick turns.
     if (inputSource.handedness === 'right') {
       turnX = Math.abs(stick.x) > Math.abs(turnX) ? stick.x : turnX;
-    } else {
+    } else if (inputSource.handedness === 'left') {
       moveX = Math.abs(stick.x) > Math.abs(moveX) ? stick.x : moveX;
       moveY = Math.abs(stick.y) > Math.abs(moveY) ? stick.y : moveY;
+    } else {
+      moveY = Math.abs(stick.y) > Math.abs(moveY) ? stick.y : moveY;
+      turnX = Math.abs(stick.x) > Math.abs(turnX) ? stick.x : turnX;
     }
   }
 
@@ -188,41 +188,32 @@ function updateXRControllerNavigation(timestamp, frame) {
   moveY = applyDeadzone(moveY, XR_STICK_DEADZONE);
   turnX = applyDeadzone(turnX, XR_STICK_DEADZONE);
 
-  let changed = false;
-
   if (Math.abs(moveX) > 0 || Math.abs(moveY) > 0) {
-    const currentRefSpace = vrRenderer.xr.getReferenceSpace() || baseXrReferenceSpace;
-    const pose = frame.getViewerPose(currentRefSpace);
-    const headYaw = pose ? getViewerYaw(pose) : xrYawOffset;
-
-    // Gamepad Y is usually negative when pushed forward.
-    const forwardAmount = -moveY;
+    // Move relative to current headset yaw plus any snap-turn yaw on the rig.
+    const headYaw = getHeadsetYaw();
+    const worldYaw = xrYaw + headYaw;
+    const forwardAmount = -moveY; // WebXR gamepad Y is usually negative when pushed forward.
     const strafeAmount = moveX;
-    const forward = new THREE.Vector3(Math.sin(headYaw), 0, -Math.cos(headYaw));
-    const strafe = new THREE.Vector3(Math.cos(headYaw), 0, Math.sin(headYaw));
+    const forward = new THREE.Vector3(Math.sin(worldYaw), 0, -Math.cos(worldYaw));
+    const strafe = new THREE.Vector3(Math.cos(worldYaw), 0, Math.sin(worldYaw));
 
-    xrMoveOffset.addScaledVector(forward, forwardAmount * XR_MOVE_SPEED * dt);
-    xrMoveOffset.addScaledVector(strafe, strafeAmount * XR_MOVE_SPEED * dt);
-    changed = true;
+    xrDolly.position.addScaledVector(forward, forwardAmount * XR_MOVE_SPEED * dt);
+    xrDolly.position.addScaledVector(strafe, strafeAmount * XR_MOVE_SPEED * dt);
   }
 
   if (turnX > XR_SNAP_TURN_THRESHOLD && !snapTurnState.right) {
-    xrYawOffset -= XR_SNAP_TURN_ANGLE;
+    xrYaw -= XR_SNAP_TURN_ANGLE;
+    xrDolly.rotation.y = xrYaw;
     snapTurnState.right = true;
-    changed = true;
   } else if (turnX < -XR_SNAP_TURN_THRESHOLD && !snapTurnState.left) {
-    xrYawOffset += XR_SNAP_TURN_ANGLE;
+    xrYaw += XR_SNAP_TURN_ANGLE;
+    xrDolly.rotation.y = xrYaw;
     snapTurnState.left = true;
-    changed = true;
   }
 
   if (Math.abs(turnX) < XR_SNAP_TURN_RESET) {
     snapTurnState.left = false;
     snapTurnState.right = false;
-  }
-
-  if (changed) {
-    applyXRReferenceSpaceOffset();
   }
 }
 
@@ -235,7 +226,7 @@ function getThumbstickAxes(gamepad) {
   const axes = gamepad.axes;
   const candidates = [];
   for (let i = 0; i < axes.length - 1; i += 2) {
-    candidates.push({ x: axes[i] || 0, y: axes[i + 1] || 0, index: i });
+    candidates.push({ x: axes[i] || 0, y: axes[i + 1] || 0 });
   }
 
   let best = candidates[candidates.length - 1];
@@ -256,23 +247,19 @@ function applyDeadzone(value, deadzone) {
   return value;
 }
 
-function getViewerYaw(pose) {
-  const view = pose.views && pose.views[0];
-  if (!view || !view.transform || !view.transform.orientation) return xrYawOffset;
-
-  const q = view.transform.orientation;
-  const quaternion = new THREE.Quaternion(q.x, q.y, q.z, q.w);
+function getHeadsetYaw() {
+  const camera = vrRenderer.xr.getCamera(vrCamera);
+  const quaternion = new THREE.Quaternion();
+  camera.getWorldQuaternion(quaternion);
   const euler = new THREE.Euler().setFromQuaternion(quaternion, 'YXZ');
-  return euler.y;
+  return euler.y - xrYaw;
 }
 
-function applyXRReferenceSpaceOffset() {
-  const halfYaw = -xrYawOffset / 2;
-  const transform = new XRRigidTransform(
-    { x: -xrMoveOffset.x, y: 0, z: -xrMoveOffset.z },
-    { x: 0, y: Math.sin(halfYaw), z: 0, w: Math.cos(halfYaw) }
-  );
-  vrRenderer.xr.setReferenceSpace(baseXrReferenceSpace.getOffsetReferenceSpace(transform));
+function getXRWorldPosition() {
+  const camera = vrRenderer.xr.getCamera(vrCamera);
+  const position = new THREE.Vector3();
+  camera.getWorldPosition(position);
+  return position;
 }
 
 function buildGallery(quilts, layout, screenSize, spacing) {
@@ -341,10 +328,13 @@ async function enterVR() {
       optionalFeatures: ['local-floor', 'bounded-floor']
     });
     currentXrSession = session;
-    xrMoveOffset.set(0, 0, 0);
-    xrYawOffset = 0;
+    xrYaw = 0;
     lastXrTimestamp = null;
     snapTurnState = { left: false, right: false };
+    if (xrDolly) {
+      xrDolly.position.set(0, 0, 0);
+      xrDolly.rotation.set(0, 0, 0);
+    }
 
     let refSpace;
     try {
@@ -352,13 +342,11 @@ async function enterVR() {
     } catch {
       refSpace = await session.requestReferenceSpace('local');
     }
-    baseXrReferenceSpace = refSpace;
-    vrRenderer.xr.setReferenceSpace(baseXrReferenceSpace);
+    vrRenderer.xr.setReferenceSpace(refSpace);
     await vrRenderer.xr.setSession(session);
 
     session.addEventListener('end', () => {
       currentXrSession = null;
-      baseXrReferenceSpace = null;
       lastXrTimestamp = null;
     });
 
