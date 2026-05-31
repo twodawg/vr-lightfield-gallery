@@ -64,19 +64,31 @@ class GalleryDisplay {
     let tileCol, tileRow;
 
     if (viewerPosition) {
-      // Normalize to THREE.Vector3 in case a non-Vector3 position object is passed
+      // Normalize to THREE.Vector3 in case a non-Vector3 position object is passed.
       const vp = (viewerPosition instanceof THREE.Vector3)
         ? viewerPosition
         : new THREE.Vector3(viewerPosition.x, viewerPosition.y, viewerPosition.z);
+
+      // Convert the viewer position into the display's local coordinate system.
+      // Local +X is screen-right, +Y is screen-up, and local -Z is in front of
+      // the display because the planes are viewed from their -Z side.
       const localPos = vp.clone().sub(this.position);
-      const invRotation = -this.rotationY;
-      const cos = Math.cos(invRotation);
-      const sin = Math.sin(invRotation);
-      const localX = localPos.x * cos - localPos.z * sin;
-      const hOffset = (localX / this.screenW) * (cols - 1) * 0.3;
-      const vOffset = (localPos.y / this.screenH) * (rows - 1) * 0.3;
-      tileCol = Math.round((cols - 1) / 2 + hOffset);
-      tileRow = Math.round((rows - 1) / 2 + vOffset);
+      localPos.applyAxisAngle(new THREE.Vector3(0, 1, 0), -this.rotationY);
+
+      // Use the angle from the screen center to the viewer, not just raw lateral
+      // position. This makes the quilt frame change as the user walks around in
+      // VR, while clamping extreme side/height positions to the first/last view.
+      const depth = Math.max(0.15, Math.abs(localPos.z));
+      const horizontalAngle = Math.atan2(localPos.x, depth);
+      const verticalAngle = Math.atan2(localPos.y, depth);
+      const horizontalRange = Math.PI / 4; // +/- 45 degrees covers the quilt views
+      const verticalRange = Math.PI / 6;   // +/- 30 degrees for vertical views
+
+      const normalizedX = Math.max(-1, Math.min(1, horizontalAngle / horizontalRange));
+      const normalizedY = Math.max(-1, Math.min(1, verticalAngle / verticalRange));
+
+      tileCol = Math.round(((normalizedX + 1) / 2) * (cols - 1));
+      tileRow = Math.round(((normalizedY + 1) / 2) * (rows - 1));
     } else {
       tileCol = Math.floor(cols / 2);
       tileRow = Math.floor(rows / 2);
